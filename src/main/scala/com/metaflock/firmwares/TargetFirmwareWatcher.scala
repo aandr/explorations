@@ -74,11 +74,9 @@ class TargetFirmwareWatcher extends App {
       .withBootstrapServers("localhost:9092").withGroupId("group-akka").withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
 
     val done = Consumer.plainSource(consumerSettings, Subscriptions.topics("device_target_fw"))
-      .map { msg =>
-        numUpdates += 1
-        devices += (msg.key() -> msg.value())
-      }
-      .runWith(Sink.ignore)
+      .map(msg => ActorMsg(msg.key(), msg.value())).async
+      .fold(TreeMap.empty[String, Long]) { (map, msg) => numUpdates += 1; map + (msg.deviceId -> msg.firmware) }
+      .runForeach(d => devices = d)
   }
 
   def runWithActor(): Unit = {
@@ -127,13 +125,15 @@ class EventeSourcedActor extends Actor {
     .withBootstrapServers("localhost:9092").withGroupId("group-akka").withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
 
   implicit val materializer = ActorMaterializer()
+  val secondActor = context.actorSelection("/user/actor2")
 
   override def preStart(): Unit = {
     val done = Consumer.plainSource(consumerSettings, Subscriptions.topics("device_target_fw"))
       .map { msg =>
-        self ! ActorMsg(msg.key(), msg.value())
+        ActorMsg(msg.key(), msg.value())
       }
-      .runWith(Sink.ignore)
+      .batch(100, List(_)) { (list, item) => list :+ item }
+      .runWith(Sink.actorRef(self, "Complete"))
     println("prestart done")
   }
 
@@ -141,10 +141,26 @@ class EventeSourcedActor extends Actor {
   var numUpdates = 0
 
   override def receive: Receive = {
+    case n: List[ActorMsg] =>
+      n.foreach(msg => secondActor ! msg)
+//      n.foreach(msg => {
+//        devices += (msg.deviceId -> msg.firmware)
+//        EventeSourcedActor.numUpdates += 1
+//      })
+
     case ActorMsg(deviceId, firmware) =>
       devices += (deviceId -> firmware)
       EventeSourcedActor.numUpdates += 1
     case "Hello" =>
       println("GOt hello")
+  }
+}
+
+class SecondActor extends Actor {
+  var devices = TreeMap.empty[String, Long]
+  override def receive: Receive = {
+    case ActorMsg(deviceId, firmware) =>
+      devices += (deviceId -> firmware)
+      EventeSourcedActor.numUpdates += 1
   }
 }

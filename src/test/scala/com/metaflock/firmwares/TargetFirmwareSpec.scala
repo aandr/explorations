@@ -19,11 +19,12 @@ import scala.concurrent.Await
 import scala.concurrent.duration._
 
 class TargetFirmwareSpec extends WordSpec with Matchers with Eventually {
+  import Utils._
+
   implicit override val patienceConfig =
     PatienceConfig(timeout = scaled(Span(120, Seconds)), interval = scaled(Span(500, Millis)))
 
 
-  val NUM_UPDATES = 10000000
 
   def publish(): Unit = {
     val producer = new KafkaProducer[String, java.lang.Long](KafkaHelper.getProducerConfig())
@@ -36,6 +37,7 @@ class TargetFirmwareSpec extends WordSpec with Matchers with Eventually {
       producer.send(new ProducerRecord[String, java.lang.Long]("device_target_fw", s"hello${n}", n.toLong * 2))
     }
     producer.flush()
+    producer.close()
     println("Published")
   }
 
@@ -54,57 +56,34 @@ class TargetFirmwareSpec extends WordSpec with Matchers with Eventually {
         producer.send(new ProducerRecord[String, java.lang.Long]("device_target_fw", s"hello${n}", n.toLong * 2))
       }
       producer.flush()
+      producer.close()
+
       println("Published")
 
       implicit val system = ActorSystem()
       implicit val materializer = ActorMaterializer()
 
-      val startTime = System.nanoTime()
 
-      val ref = system.actorOf(Props[EventeSourcedActor])
-      implicit val timeout = Timeout(5 seconds)
-      implicit val ec = system.dispatcher
+      Utils.time {
+        val ref = system.actorOf(Props[EventeSourcedActor])
+        val ref2 = system.actorOf(Props[SecondActor], "actor2")
+        implicit val timeout = Timeout(5 seconds)
+        implicit val ec = system.dispatcher
 
-      var n = 0
+        var n = 0
 
-      eventually {
-        val num = EventeSourcedActor.numUpdates
-        println(num + " " + n)
-        if (num > 0) {
-          n += 1
+        eventually {
+          val num = EventeSourcedActor.numUpdates
+          println(num + " " + n)
+          if (num > 0) {
+            n += 1
+          }
+          num shouldEqual NUM_UPDATES * 2
         }
-        num shouldEqual NUM_UPDATES * 2
       }
 
       kafkaServer.close()
 
-      val duration = (System.nanoTime() - startTime) / 1000000
-      println(s"Self Actor total: ${NUM_UPDATES * 2 / duration}")
-      Runtime.getRuntime.gc()
-    }
-
-    "watch all firmware changes with Akka Actor" in {
-      val kafkaServer = new KafkaServer(kafkaPort = 9092)
-      kafkaServer.startup()
-
-      publish()
-
-      val watcher = new TargetFirmwareWatcher()
-      new Thread({ () => watcher.runWithActor() }).start()
-
-      var n = 0
-
-      eventually {
-        println(watcher.numUpdates + " " + n)
-        if (watcher.numUpdates > 0) {
-          n += 1
-        }
-        watcher.numUpdates shouldEqual NUM_UPDATES * 2
-      }
-
-      kafkaServer.close()
-
-      println(s"Akka actor total: ${NUM_UPDATES / (n)}")
       Runtime.getRuntime.gc()
     }
 
@@ -116,25 +95,23 @@ class TargetFirmwareSpec extends WordSpec with Matchers with Eventually {
 
       val startTime = System.nanoTime()
       val watcher = new TargetFirmwareWatcher()
-      new Thread({ () => watcher.runWithAkkaStreams() }).start()
 
-      var n = 0
+      Utils.time {
+        new Thread({ () => watcher.runWithAkkaStreams() }).start()
 
-      eventually {
-        println(watcher.numUpdates + " " + n)
-        if (watcher.numUpdates > 0) {
-          n += 1
+        var n = 0
+
+        eventually {
+          println(watcher.numUpdates + " " + n)
+          if (watcher.numUpdates > 0) {
+            n += 1
+          }
+          watcher.numUpdates shouldEqual NUM_UPDATES * 2
         }
-        watcher.numUpdates shouldEqual NUM_UPDATES * 2
+
+        kafkaServer.close()
+
       }
-
-      kafkaServer.close()
-
-      val duration = (System.nanoTime() - startTime) / 1000
-      println(duration)
-
-
-      println(s"Akka streams total: ${NUM_UPDATES * 2 / duration}")
       Runtime.getRuntime.gc()
     }
 
@@ -151,24 +128,27 @@ class TargetFirmwareSpec extends WordSpec with Matchers with Eventually {
         producer.send(new ProducerRecord[String, java.lang.Long]("device_target_fw", s"hello${n}", n.toLong * 2))
       }
       producer.flush()
+      producer.close()
       println("Published")
 
       val watcher = new TargetFirmwareWatcher()
-      new Thread({ () => watcher.runWithStreams() }).start()
 
-      var n = 0
+      Utils.time {
+        new Thread({ () => watcher.runWithStreams() }).start()
 
-      eventually {
-        println(watcher.numUpdates + " " + n)
-        if (watcher.numUpdates > 0) {
-          n += 1
+        var n = 0
+
+        eventually {
+          println(watcher.numUpdates + " " + n)
+          if (watcher.numUpdates > 0) {
+            n += 1
+          }
+          watcher.numUpdates shouldEqual NUM_UPDATES * 2
         }
-        watcher.numUpdates shouldEqual NUM_UPDATES * 2
       }
 
       kafkaServer.close()
 
-      println(s"Streams total: ${n / 2}")
       Runtime.getRuntime.gc()
     }
 
@@ -208,4 +188,19 @@ class TargetFirmwareSpec extends WordSpec with Matchers with Eventually {
 
   }
 
+}
+
+object Utils {
+  val NUM_UPDATES = 10000000
+
+  def time[R](block: => R): R = {
+    val t0 = System.nanoTime() / 1000000000
+    val result = block // call-by-name
+    val t1 = System.nanoTime() / 1000000000
+
+    println("Elapsed time: " + (t1 - t0) + "s")
+
+    println("Throughput: " + (NUM_UPDATES * 2 / (t1 - t0)) + " msg/s")
+    result
+  }
 }

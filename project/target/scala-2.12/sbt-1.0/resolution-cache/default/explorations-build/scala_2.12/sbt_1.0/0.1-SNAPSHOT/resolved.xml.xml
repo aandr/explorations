@@ -4,7 +4,7 @@
 		module="explorations-build"
 		revision="0.1-SNAPSHOT"
 		status="integration"
-		publication="20170916175705"
+		publication="20170919133933"
 		e:sbtVersion="1.0" e:scalaVersion="2.12"
 	>
 		<description>
